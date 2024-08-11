@@ -1,10 +1,25 @@
 import * as THREE from "three";
-import { useMemo, useRef } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Canvas } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
 import { nanoid } from "nanoid";
+import TreeForm from "./Settings.js";
+import { ChakraProvider, Flex, Box } from "@chakra-ui/react";
 
 function App() {
+  const [formData, setFormData] = useState({
+    showNodes: true,
+    showAttractors: true,
+    radiusOfInfluence: 5,
+    displacementOfVectors: 1,
+    noOfIterations: 100,
+    minDistanceBetweenNodes: 5,
+    branchingDensity: "normal",
+    addJitter: false,
+    attractorShape: "random",
+    attractorDensity: "normal",
+    treeColor: "#00ff00",
+  });
   const maxNodes = 10000;
   const ri = 10; // Radius of influence
   const D = 1.0; // Displacement of vectors
@@ -17,15 +32,15 @@ function App() {
     const tempArr = [];
     const attractorSize = 100;
     for (let i = 0; i < attractorSize; i++) {
-      const x = Math.random() * 20 - 10;
-      const y = Math.random() * 20 + 5;
-      const z = Math.random() * 20 - 10;
-      // const theta = Math.random() * Math.PI * 2;
-      // const phi = Math.acos(2 * Math.random() - 1);
-      // const r = 9 + Math.random() * 20; // Radius between 30 and 50
-      // const x = r * Math.sin(phi) * Math.cos(theta);
-      // const y = r * Math.sin(phi) * Math.sin(theta);
-      // const z = r * Math.cos(phi);
+      // const x = Math.random() * 20 - 10;
+      // const y = Math.random() * 20 + 5;
+      // const z = Math.random() * 20 - 10;
+      const theta = Math.random() * Math.PI * 2;
+      const phi = Math.acos(2 * Math.random() - 1);
+      const r = 9 + Math.random() * 20; // Radius between 30 and 50
+      const x = r * Math.sin(phi) * Math.cos(theta);
+      const y = r * Math.sin(phi) * Math.sin(theta);
+      const z = r * Math.cos(phi);
       tempArr.push(new THREE.Vector3(x, y, z));
     }
     return tempArr;
@@ -48,7 +63,7 @@ function App() {
   }
   let nodes = [
     {
-      pos: new THREE.Vector3(0, -2, 0),
+      pos: new THREE.Vector3(0, -10, 0),
       visited: false,
       parent: null,
       level: 0,
@@ -139,7 +154,6 @@ function App() {
     return new THREE.CatmullRomCurve3([start, midPoint, end]);
   }
 
-
   function generateCurves() {
     const curves = [];
     // Create a map to store connections
@@ -161,7 +175,7 @@ function App() {
           if (!connections.has(key)) {
             const curve = createSmoothCurve(parentNode.pos, node.pos);
             // console.info(curves)
-            curves.push({curve: curve, level: node.level });
+            curves.push({ curve: curve, level: node.level });
             // Mark this connection as created
             connections.set(key, true);
           }
@@ -189,15 +203,15 @@ function App() {
     }
   }
   function TreeMesh(geometry, level) {
-      const color = new THREE.Color().setHSL(1, 0.3 - level * 0.05, 0.5);
-      const material = <meshPhongMaterial color={color} shininess={10} />;
-      const ref = useRef();
-      return (
-        <mesh key={nanoid()} ref={ref}>
-          {geometry}
-          {material}
-        </mesh>
-      );
+    const color = new THREE.Color().setHSL(1, 0.3 - level * 0.05, 0.5);
+    const material = <meshPhongMaterial color={color} shininess={10} />;
+    const ref = useRef();
+    return (
+      <mesh key={nanoid()} ref={ref}>
+        {geometry}
+        {material}
+      </mesh>
+    );
   }
   function TreeMeshes() {
     const curves = generateCurves();
@@ -213,30 +227,47 @@ function App() {
       );
       return { geometry: tubeGeometry, level };
     });
-    console.info(tubeGeometries)
 
-    const treeMeshes = tubeGeometries.map(({ geometry, level }) => TreeMesh(geometry, level));
+    const treeMeshes = tubeGeometries.map(({ geometry, level }) =>
+      TreeMesh(geometry, level)
+    );
     return treeMeshes;
   }
   const nodePoints = nodes.map((n) => [n.pos.x, n.pos.y, n.pos.z]).flat();
   const attrPoints = attractorPoints.map((a) => [a.x, a.y, a.z]).flat();
 
   return (
-    <Canvas>
-      <ambientLight intensity={Math.PI / 2} />
-      <spotLight
-        position={[10, 10, 10]}
-        angle={0.15}
-        penumbra={1}
-        decay={0}
-        intensity={Math.PI}
-      />
-      <pointLight position={[-10, -10, -10]} decay={0} intensity={Math.PI} />
-      <TreeMeshes />
-      <Dots color={"red"} points={nodePoints} count={nodes.length} />
-      <Dots color={"blue"} points={attrPoints} count={100} />
-      <OrbitControls />
-    </Canvas>
+    <ChakraProvider>
+      <Flex height="100vh">
+        <Box width="300px" p={4} bg="gray.100">
+          <TreeForm formData={formData} setFormData={setFormData} />
+        </Box>
+        <Box flex="1">
+          <Canvas
+            style={{ height: "100%", width: "100%" }}
+            camera={{ position: [0, 0, 10], fov: 50, near: 0.5, far: 1000 }}
+          >
+            <ambientLight intensity={Math.PI / 2} />
+            <spotLight
+              position={[10, 10, 10]}
+              angle={0.15}
+              penumbra={1}
+              decay={0}
+              intensity={Math.PI}
+            />
+            <pointLight
+              position={[-10, -10, -10]}
+              decay={0}
+              intensity={Math.PI}
+            />
+            <TreeMeshes />
+            <Dots color={"red"} points={nodePoints} count={nodes.length} />
+            <Dots color={"blue"} points={attrPoints} count={100} />
+            <OrbitControls />
+          </Canvas>
+        </Box>
+      </Flex>
+    </ChakraProvider>
   );
 }
 
