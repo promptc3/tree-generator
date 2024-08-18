@@ -5,10 +5,6 @@ import {
   FormLabel,
   Flex,
   Switch,
-  Slider,
-  SliderTrack,
-  SliderFilledTrack,
-  SliderThumb,
   Input,
   RadioGroup,
   Radio,
@@ -62,24 +58,6 @@ function TreeForm({ formData, setFormData, handleSubmit }) {
           </FormControl>
 
           <FormControl mb={4}>
-            <FormLabel>Minimum Distance Between Nodes</FormLabel>
-            <Slider
-              name="minDistanceBetweenNodes"
-              defaultValue={formData.minDistanceBetweenNodes}
-              min={0}
-              max={10}
-              onChange={(value) =>
-                setFormData({ ...formData, minDistanceBetweenNodes: value })
-              }
-            >
-              <SliderTrack>
-                <SliderFilledTrack />
-              </SliderTrack>
-              <SliderThumb />
-            </Slider>
-          </FormControl>
-
-          <FormControl mb={4}>
             <FormLabel>Branching Density</FormLabel>
             <Select
               name="branchingDensity"
@@ -115,7 +93,7 @@ function TreeForm({ formData, setFormData, handleSubmit }) {
             >
               <Stack direction="row">
                 <Radio value="random">Random</Radio>
-                <Radio value="circle">Circle</Radio>
+                <Radio value="sphere">Circle</Radio>
                 <Radio value="others">Others</Radio>
               </Stack>
             </RadioGroup>

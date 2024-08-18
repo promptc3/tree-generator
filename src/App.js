@@ -5,6 +5,7 @@ import { OrbitControls } from "@react-three/drei";
 import { nanoid } from "nanoid";
 import TreeForm from "./Settings.js";
 import { ChakraProvider, Flex, Box } from "@chakra-ui/react";
+import convert from "color-convert";
 
 function App() {
   const [formData, setFormData] = useState({
@@ -16,7 +17,7 @@ function App() {
     minDistanceBetweenNodes: 5,
     branchingDensity: "normal",
     addJitter: false,
-    attractorShape: "random",
+    attractorShape: "sphere",
     attractorDensity: "normal",
     treeColor: "#00ff00",
   });
@@ -76,6 +77,7 @@ function App() {
   }
   const generateNodes = (initPos, attractorPoints) => {
     // pos: new THREE.Vector3(0, -10, 0),
+    const branchOffset = 0.3;
     let nodes = [
       {
         pos: initPos,
@@ -125,16 +127,18 @@ function App() {
             // Apply repulsion
             const repulsion = applyRepulsion(n, nodes);
             dir.add(repulsion).normalize();
-            // // Add some randomness to branch direction
-            // dir
-            //   .add(
-            //     new THREE.Vector3(
-            //       (Math.random() - 0.5) * branchOffset,
-            //       (Math.random() - 0.5) * branchOffset,
-            //       (Math.random() - 0.5) * branchOffset
-            //     )
-            //   )
-            //   .normalize();
+            // Add some randomness to branch direction
+            if (formData.addJitter) {
+              dir
+                .add(
+                  new THREE.Vector3(
+                    (Math.random() - 0.5) * branchOffset,
+                    (Math.random() - 0.5) * branchOffset,
+                    (Math.random() - 0.5) * branchOffset
+                  )
+                )
+                .normalize();
+            }
             if (!isNaN(dir.x) || !isNaN(dir.y) || !isNaN(dir.z)) {
               const newPos = n.pos.clone().add(dir.multiplyScalar(D));
               newNodes.push({
@@ -226,7 +230,8 @@ function App() {
     }
   }
   function TreeMesh(geometry, level) {
-    const color = new THREE.Color().setHSL(1, 0.3 - level * 0.05, 0.5);
+    const hue = convert.hex.hsl(formData.treeColor)[0] / 360;
+    const color = new THREE.Color().setHSL(hue, 1 - level * 0.05, 0.5);
     const material = <meshPhongMaterial color={color} shininess={10} />;
     const ref = useRef();
     return (
@@ -239,7 +244,7 @@ function App() {
   const [curves, setCurves] = useState([]);
   const newCurve = () => {
     const initPos = new THREE.Vector3(0, -10, 0);
-    const newAttractors = generateAttractors("sphere", 100);
+    const newAttractors = generateAttractors(formData.attractorShape, 100);
     const newNodes = generateNodes(initPos, newAttractors);
     console.info("[newCurve] New nodes", newNodes);
     const newCurves = generateCurves(newNodes);
