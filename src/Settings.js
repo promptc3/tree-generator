@@ -6,14 +6,11 @@ import {
   Flex,
   Switch,
   Input,
-  RadioGroup,
-  Radio,
-  Stack,
   Select,
   Button,
 } from "@chakra-ui/react";
 
-function TreeForm({ formData, setFormData, handleSubmit }) {
+function TreeForm({ formData, setFormData, handleSubmit, handleExport }) {
   const handleChange = (e) => {
     const { name, value, type, checked } = e.target;
     setFormData({
@@ -31,8 +28,17 @@ function TreeForm({ formData, setFormData, handleSubmit }) {
         boxShadow="lg"
         height={"100vh"}
         flexDirection={"column"}
+        overflow="hidden"
       >
-        <Box flex={1}>
+        <Box mb={4} textAlign="center">
+          <FormLabel fontSize="2xl" fontWeight="bold">
+            Tree Generator
+          </FormLabel>
+          <FormLabel fontSize="sm" color="gray.500">
+            Adjust the settings and click "Generate" to see the magic!
+          </FormLabel>
+        </Box>
+        <Box flex={1} overflowY="auto" pr={1}>
           <FormControl display="flex" alignItems="center" mb={4}>
             <FormLabel htmlFor="show-nodes" mb="0">
               Show Nodes
@@ -64,9 +70,9 @@ function TreeForm({ formData, setFormData, handleSubmit }) {
               value={formData.branchingDensity}
               onChange={handleChange}
             >
-              <option value="compact">Compact</option>
-              <option value="normal">Normal</option>
               <option value="dense">Dense</option>
+              <option value="normal">Normal</option>
+              <option value="sparse">Sparse</option>
             </Select>
           </FormControl>
 
@@ -83,20 +89,18 @@ function TreeForm({ formData, setFormData, handleSubmit }) {
           </FormControl>
 
           <FormControl mb={4}>
-            <FormLabel>Attractor Shape</FormLabel>
-            <RadioGroup
-              name="attractorShape"
-              value={formData.attractorShape}
-              onChange={(value) =>
-                setFormData({ ...formData, attractorShape: value })
-              }
+            <FormLabel>Canopy Shape</FormLabel>
+            <Select
+              name="canopyShape"
+              value={formData.canopyShape}
+              onChange={handleChange}
             >
-              <Stack direction="row">
-                <Radio value="random">Random</Radio>
-                <Radio value="sphere">Circle</Radio>
-                <Radio value="others">Others</Radio>
-              </Stack>
-            </RadioGroup>
+              <option value="sphere">Sphere (Oak / Maple)</option>
+              <option value="cone">Cone (Pine / Fir)</option>
+              <option value="cylinder">Cylinder (Poplar / Palm)</option>
+              <option value="flat">Flat (Acacia / Cedar)</option>
+              <option value="random">Random</option>
+            </Select>
           </FormControl>
 
           <FormControl mb={4}>
@@ -106,10 +110,26 @@ function TreeForm({ formData, setFormData, handleSubmit }) {
               value={formData.attractorDensity}
               onChange={handleChange}
             >
-              <option value="compact">Compact</option>
-              <option value="normal">Normal</option>
               <option value="dense">Dense</option>
+              <option value="normal">Normal</option>
+              <option value="sparse">Sparse</option>
             </Select>
+          </FormControl>
+
+          <FormControl mb={4}>
+            <FormLabel>
+              Upward Bias Strength:{" "}
+              <strong>{parseFloat(formData.upwardBias).toFixed(1)}</strong>
+            </FormLabel>
+            <Input
+              type="range"
+              name="upwardBias"
+              min="0"
+              max="3"
+              step="0.1"
+              value={formData.upwardBias}
+              onChange={handleChange}
+            />
           </FormControl>
 
           <FormControl mb={4}>
@@ -121,10 +141,23 @@ function TreeForm({ formData, setFormData, handleSubmit }) {
               onChange={handleChange}
             />
           </FormControl>
+
+          <FormControl mb={4}>
+            <FormLabel>Background Color</FormLabel>
+            <Input
+              type="color"
+              name="backgroundColor"
+              value={formData.backgroundColor}
+              onChange={handleChange}
+            />
+          </FormControl>
         </Box>
-        <Box>
+        <Box display="flex" flexDirection="row" gap={2} pt={2}>
           <Button colorScheme="blue" width="full" onClick={handleSubmit}>
-            Generate Tree
+            Generate
+          </Button>
+          <Button colorScheme="green" width="full" onClick={handleExport}>
+            Export
           </Button>
         </Box>
       </Flex>

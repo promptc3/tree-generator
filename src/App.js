@@ -1,6 +1,7 @@
 import * as THREE from "three";
-import { useRef, useState } from "react";
-import { Canvas } from "@react-three/fiber";
+import { useState, useRef } from "react";
+import { Canvas, useThree } from "@react-three/fiber";
+import { GLTFExporter } from "three/examples/jsm/exporters/GLTFExporter";
 import { OrbitControls } from "@react-three/drei";
 import { nanoid } from "nanoid";
 import TreeForm from "./Settings.js";
@@ -18,8 +19,11 @@ function App() {
     branchingDensity: "normal",
     addJitter: false,
     attractorShape: "sphere",
+    canopyShape: "sphere",
     attractorDensity: "normal",
-    treeColor: "#00ff00",
+    upwardBias: 1.5,
+    treeColor: "#a87a6b",
+    backgroundColor: "#111111"
   });
   const [nodePoints, setNodePoints] = useState([]);
   const maxNodes = 10000;
@@ -27,37 +31,68 @@ function App() {
   const D = 1.0; // Displacement of vectors
   const itrs = 100; // Iterations
   const minDist = 5; // minimum distance between nodes
-  const maxBranchesPerNode = 3; // Maximum number of branches per node
-  const branchProbability = 0.3;
+
+  // Derive branching params from the branchingDensity setting
+  const branchingDensityMap = {
+    dense:  { maxBranchesPerNode: 4, branchProbability: 0.4 },
+    normal: { maxBranchesPerNode: 3, branchProbability: 0.3 },
+    sparse: { maxBranchesPerNode: 2, branchProbability: 0.15 },
+  };
+  const { maxBranchesPerNode, branchProbability } =
+    branchingDensityMap[formData.branchingDensity] ?? branchingDensityMap.normal;
   const repulsionForce = 0.5;
   const [attractorPoints, setAttractorsPoints] = useState([]);
-  const generateAttractors = (shape, size) => {
+  const generateAttractors = (canopyShape, size) => {
     const tempArr = [];
-    const attractorSize = size;
-    if (shape === "sphere") {
-      for (let i = 0; i < attractorSize; i++) {
-        const theta = Math.random() * Math.PI * 2;
-        const phi = Math.acos(2 * Math.random() - 1);
-        const r = 9 + Math.random() * 20; // Radius between 30 and 50
-        const x = r * Math.sin(phi) * Math.cos(theta);
-        const y = r * Math.sin(phi) * Math.sin(theta);
-        const z = r * Math.cos(phi);
-        tempArr.push(new THREE.Vector3(x, y, z));
+    for (let i = 0; i < size; i++) {
+      const theta = Math.random() * Math.PI * 2;
+      let x, y, z;
+
+      if (canopyShape === "sphere") {
+        // Rounded canopy — upper hemisphere (oak, maple)
+        const phi = Math.acos(1 - Math.random()); // 0..PI/2
+        const r = 9 + Math.random() * 14;
+        x = r * Math.sin(phi) * Math.cos(theta);
+        y = r * Math.cos(phi) + 8;
+        z = r * Math.sin(phi) * Math.sin(theta);
+
+      } else if (canopyShape === "cone") {
+        // Conical canopy — tall and narrow at top (pine, fir, cypress)
+        const heightFrac = Math.random(); // 0 = base of cone, 1 = tip
+        const coneHeight = 25;
+        const coneBaseRadius = 10;
+        const radius = coneBaseRadius * (1 - heightFrac) * Math.random();
+        x = radius * Math.cos(theta);
+        y = 5 + heightFrac * coneHeight;
+        z = radius * Math.sin(theta);
+
+      } else if (canopyShape === "cylinder") {
+        // Tall narrow column — uniform spread at all heights (poplar, palm)
+        const cylinderRadius = 4 + Math.random() * 3;
+        const cylinderHeight = 25;
+        x = cylinderRadius * Math.cos(theta);
+        y = 8 + Math.random() * cylinderHeight;
+        z = cylinderRadius * Math.sin(theta);
+
+      } else if (canopyShape === "flat") {
+        // Wide flat umbrella — low height, wide spread (acacia, cedar of Lebanon)
+        const r = 5 + Math.random() * 18;
+        x = r * Math.cos(theta);
+        y = 10 + Math.random() * 5; // Shallow vertical range
+        z = r * Math.sin(theta);
+
+      } else {
+        // Fallback: random scatter above base
+        x = Math.random() * 20 - 10;
+        y = Math.random() * 20 + 5;
+        z = Math.random() * 20 - 10;
       }
-      const newAttrPoints = tempArr.map((a) => [a.x, a.y, a.z]).flat();
-      setAttractorsPoints(newAttrPoints);
-      return tempArr;
-    } else {
-      for (let i = 0; i < attractorSize; i++) {
-        const x = Math.random() * 20 - 10;
-        const y = Math.random() * 20 + 5;
-        const z = Math.random() * 20 - 10;
-        tempArr.push(new THREE.Vector3(x, y, z));
-      }
-      const newAttrPoints = tempArr.map((a) => [a.x, a.y, a.z]).flat();
-      setAttractorsPoints(newAttrPoints);
-      return tempArr;
+
+      tempArr.push(new THREE.Vector3(x, y, z));
     }
+    const newAttrPoints = tempArr.map((a) => [a.x, a.y, a.z]).flat();
+    setAttractorsPoints(newAttrPoints);
+    return tempArr;
   };
 
   function applyRepulsion(node, otherNodes) {
@@ -76,16 +111,38 @@ function App() {
     return repulsion;
   }
   const generateNodes = (initPos, attractorPoints) => {
-    // pos: new THREE.Vector3(0, -10, 0),
     const branchOffset = 0.3;
-    let nodes = [
-      {
-        pos: initPos,
-        visited: false,
-        parent: null,
-        level: 0,
-      },
-    ];
+
+    // First, grow a straight trunk upward until we reach the attractor zone
+    const trunkNodes = [];
+    let currentPos = initPos.clone();
+    const trunkStep = D;
+    // Find the lowest attractor y to know where to stop the trunk
+    const lowestAttractorY = Math.min(...attractorPoints.map((a) => a.y));
+    // Grow trunk until within radius of influence of the nearest attractor
+    let trunkLevel = 0;
+    while (true) {
+      const closestDist = Math.min(
+        ...attractorPoints.map((a) => a.distanceTo(currentPos))
+      );
+      trunkNodes.push({
+        pos: currentPos.clone(),
+        visited: true, // trunk nodes are consumed; branching starts at the top
+        parent: trunkNodes.length > 0 ? trunkNodes[trunkNodes.length - 1].pos.clone() : null,
+        level: trunkLevel,
+      });
+      if (closestDist <= ri) break; // we're in range, stop growing trunk
+      if (currentPos.y > lowestAttractorY + ri) break; // safety: don't overshoot
+      currentPos.y += trunkStep;
+      trunkLevel++;
+    }
+    // Mark the last trunk node as unvisited so it can branch
+    if (trunkNodes.length > 0) {
+      trunkNodes[trunkNodes.length - 1].visited = false;
+    }
+
+    let nodes = [...trunkNodes];
+
     for (let i = 0; i < itrs && nodes.length < maxNodes; i++) {
       const newNodes = [];
 
@@ -102,9 +159,19 @@ function App() {
         );
 
         if (closeAttractors.length > 0) {
+          // For cone canopy, taper branching probability with height so the
+          // top stays sparse (like a real pine/fir).
+          // Cone spans y = 6 (base) to y = 30 (tip) — clamp to [0,1].
+          const coneTaperFactor =
+            formData.canopyShape === "cone"
+              ? Math.max(0, 1 - (n.pos.y - 6) / 25)
+              : 1;
+          // console.info(`Cone taper factor at y=${n.pos.y.toFixed(2)} is ${coneTaperFactor.toFixed(2)}`);
+          const effectiveBranchProbability = branchProbability * coneTaperFactor;
+
           let numBranches = 1;
           for (let b = 1; b < maxBranchesPerNode; b++) {
-            if (Math.random() < branchProbability) numBranches++;
+            if (Math.random() < effectiveBranchProbability) numBranches++;
             else break;
           }
           // const numBranches = Math.floor(
@@ -121,12 +188,20 @@ function App() {
                 Math.floor(Math.random() * closeAttractors.length)
               ];
             const dir = closestAttr.clone().sub(n.pos).normalize();
-            dir.y += 0.5; // Add slight upward bias
-            // dir.normalize();
+            // Stronger upward bias for lower levels (trunk), weaker for higher (tips)
+            const upwardBias = Math.max(0, formData.upwardBias - n.level * 0.05);
+            dir.y += upwardBias;
+            dir.normalize();
 
             // Apply repulsion
             const repulsion = applyRepulsion(n, nodes);
             dir.add(repulsion).normalize();
+
+            // Prevent early branches from growing downward
+            if (n.level < 3 && dir.y < 0.2) {
+              dir.y = 0.2;
+              dir.normalize();
+            }
             // Add some randomness to branch direction
             if (formData.addJitter) {
               dir
@@ -164,12 +239,68 @@ function App() {
       }
       nodes = nodes.concat(newNodes);
     }
-    console.info("[generateNodes] new nodes", nodes);
+    // console.info("[generateNodes] new nodes", nodes);
     const newNodePoints =
       nodes && nodes.map((n) => [n.pos.x, n.pos.y, n.pos.z]).flat();
     setNodePoints(newNodePoints);
     return nodes;
   };
+
+  // Build a tapered tube geometry along a curve path with different start/end radii
+  function createTaperedTubeGeometry(path, tubularSegments, radiusStart, radiusEnd, radialSegments) {
+    const frames = path.computeFrenetFrames(tubularSegments);
+    const vertices = [];
+    const normals = [];
+    const uvs = [];
+    const indices = [];
+
+    for (let i = 0; i <= tubularSegments; i++) {
+      const t = i / tubularSegments;
+      const pos = path.getPointAt(t);
+      const N = frames.normals[i];
+      const B = frames.binormals[i];
+      // Linearly interpolate radius from start (bottom/parent) to end (top/child)
+      const radius = radiusStart + (radiusEnd - radiusStart) * t;
+
+      for (let j = 0; j <= radialSegments; j++) {
+        const v = (j / radialSegments) * Math.PI * 2;
+        const sin = Math.sin(v);
+        const cos = -Math.cos(v);
+
+        const normal = new THREE.Vector3(
+          cos * N.x + sin * B.x,
+          cos * N.y + sin * B.y,
+          cos * N.z + sin * B.z
+        ).normalize();
+
+        vertices.push(
+          pos.x + radius * normal.x,
+          pos.y + radius * normal.y,
+          pos.z + radius * normal.z
+        );
+        normals.push(normal.x, normal.y, normal.z);
+        uvs.push(t, j / radialSegments);
+      }
+    }
+
+    for (let i = 0; i < tubularSegments; i++) {
+      for (let j = 0; j < radialSegments; j++) {
+        const a = i * (radialSegments + 1) + j;
+        const b = (i + 1) * (radialSegments + 1) + j;
+        const c = (i + 1) * (radialSegments + 1) + (j + 1);
+        const d = i * (radialSegments + 1) + (j + 1);
+        indices.push(a, b, d);
+        indices.push(b, c, d);
+      }
+    }
+
+    const geometry = new THREE.BufferGeometry();
+    geometry.setIndex(indices);
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+    geometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+    geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+    return geometry;
+  }
 
   // Helper function to create a smooth curve between two points
   function createSmoothCurve(start, end) {
@@ -229,57 +360,112 @@ function App() {
       );
     }
   }
-  function TreeMesh(geometry, level) {
-    const hue = convert.hex.hsl(formData.treeColor)[0] / 360;
-    const color = new THREE.Color().setHSL(hue, 1 - level * 0.05, 0.5);
-    const material = <meshPhongMaterial color={color} shininess={10} />;
-    const ref = useRef();
-    return (
-      <mesh key={nanoid()} ref={ref}>
-        {geometry}
-        {material}
-      </mesh>
-    );
-  }
   const [curves, setCurves] = useState([]);
   const newCurve = () => {
+    const attractorDensityMap = { dense: 200, normal: 100, sparse: 50 };
+    const attractorCount =
+      attractorDensityMap[formData.attractorDensity] ?? attractorDensityMap.normal;
     const initPos = new THREE.Vector3(0, -10, 0);
-    const newAttractors = generateAttractors(formData.attractorShape, 100);
+    const newAttractors = generateAttractors(formData.canopyShape, attractorCount);
     const newNodes = generateNodes(initPos, newAttractors);
-    console.info("[newCurve] New nodes", newNodes);
+    // console.info("[newCurve] New nodes", newNodes);
     const newCurves = generateCurves(newNodes);
-    console.info("[newCurve] New curves", newCurves);
+    // console.info("[newCurve] New curves", newCurves);
+    setCurves([]);
     setCurves(newCurves);
   };
   function TreeMeshes({ curves }) {
-    if (curves) {
-      const tubeGeometries = curves.map(({ curve, level }) => {
-        const radius = Math.max(0.05, 0.2 - level * 0.02); // Decrease radius for higher levels
-        const radialSegments = 8; // Number of sides for the tube
-        const tubularSegments = 20; // Number of divisions along the tube
-        const tubeGeometry = (
-          <tubeGeometry
-            key={nanoid()}
-            args={[curve, tubularSegments, radius, radialSegments, false]}
-          />
+    if (curves && curves.length > 0) {
+      const maxLevel = Math.max(...curves.map((c) => c.level));
+      // Initial trunk radius scales with tree depth
+      const initialRadius = Math.min(2.0, 0.15 + maxLevel * 0.04);
+      const minRadius = 0.02;
+      // Exponential decay so radius at maxLevel equals minRadius
+      const decayFactor =
+        maxLevel > 0
+          ? Math.pow(minRadius / initialRadius, 1 / maxLevel)
+          : 1;
+      const radiusAtLevel = (level) =>
+        initialRadius * Math.pow(decayFactor, level);
+
+      const hue = convert.hex.hsl(formData.treeColor)[0] / 360;
+      const radialSegments = 8;
+      const tubularSegments = 20;
+
+      const treeMeshes = curves.map(({ curve, level }) => {
+        const bottomRadius = radiusAtLevel(level - 1); // parent side
+        const topRadius = radiusAtLevel(level);         // child side
+        const color = new THREE.Color().setHSL(hue, 1 - level * 0.02, 0.5);
+        const geometry = createTaperedTubeGeometry(
+          curve,
+          tubularSegments,
+          bottomRadius,
+          topRadius,
+          radialSegments
         );
-        return { geometry: tubeGeometry, level };
+        return (
+          <mesh key={nanoid()} geometry={geometry}>
+            <meshPhongMaterial color={color} shininess={10} />
+          </mesh>
+        );
       });
 
-      const treeMeshes = tubeGeometries.map(({ geometry, level }) =>
-        TreeMesh(geometry, level)
-      );
-      return treeMeshes;
+      // Add sphere joints at connection points with matching radii
+      const jointSpheres = curves.map(({ curve, level }) => {
+        const bottomRadius = radiusAtLevel(level - 1);
+        const topRadius = radiusAtLevel(level);
+        const points = curve.getPoints(2); // start, mid, end
+        const color = new THREE.Color().setHSL(hue, 1 - level * 0.02, 0.5);
+        return [
+          <mesh key={nanoid()} position={[points[0].x, points[0].y, points[0].z]}>
+            <sphereGeometry args={[bottomRadius * 1.01, 8, 8]} />
+            <meshPhongMaterial color={color} shininess={10} />
+          </mesh>,
+          <mesh key={nanoid()} position={[points[2].x, points[2].y, points[2].z]}>
+            <sphereGeometry args={[topRadius * 1.01, 8, 8]} />
+            <meshPhongMaterial color={color} shininess={10} />
+          </mesh>,
+        ];
+      });
+
+      return [...treeMeshes, ...jointSpheres.flat()];
     }
   }
   // console.info("Attractor Points", attractorPoints);
+
+  // Captures the live Three.js scene into a ref so we can export it
+  const sceneRef = useRef(null);
+  function SceneCapture() {
+    const { scene } = useThree();
+    sceneRef.current = scene;
+    return null;
+  }
+
+  function exportGLB() {
+    if (!sceneRef.current) return;
+    const exporter = new GLTFExporter();
+    exporter.parse(
+      sceneRef.current,
+      (result) => {
+        const blob = new Blob([result], { type: "application/octet-stream" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `tree_${formData.canopyShape}_${Date.now()}.glb`;
+        a.click();
+        URL.revokeObjectURL(url);
+      },
+      (error) => console.error("GLB export error", error),
+      { binary: true }
+    );
+  }
 
   return (
     <ChakraProvider>
       <Flex height="100vh">
         <Box flex="1">
           <Canvas
-            style={{ height: "100%", width: "100%" }}
+            style={{ height: "100%", width: "100%", background: formData.backgroundColor }}
             camera={{ position: [0, 0, 10], fov: 50, near: 0.5, far: 1000 }}
           >
             <ambientLight intensity={Math.PI / 2} />
@@ -296,6 +482,7 @@ function App() {
               intensity={Math.PI}
             />
             <TreeMeshes curves={curves} />
+            <SceneCapture />
             <Dots
               show={formData.showNodes}
               color={"red"}
@@ -316,6 +503,7 @@ function App() {
             formData={formData}
             setFormData={setFormData}
             handleSubmit={newCurve}
+            handleExport={exportGLB}
           />
         </Box>
       </Flex>
