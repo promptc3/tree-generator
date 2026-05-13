@@ -7,6 +7,7 @@ import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js
 import TreeForm from "./Settings.js";
 import { ChakraProvider, Flex, Box } from "@chakra-ui/react";
 import { Perf } from "r3f-perf";
+import { createLeafMesh } from "./LeafMesh.js";
 
 function App() {
   const [formData, setFormData] = useState({
@@ -18,6 +19,7 @@ function App() {
     minDistanceBetweenNodes: 5,
     branchingDensity: "normal",
     addJitter: false,
+    addFoliage: false,
     attractorShape: "sphere",
     canopyShape: "sphere",
     attractorDensity: "normal",
@@ -502,6 +504,128 @@ function App() {
       );
     }
   }
+  /**
+   * FoliageMeshes — places leaf instances along thin (high-level) branches.
+   *
+   * Strategy:
+   *  1. Determine the max branch level so we can identify thin branches
+   *     (level ≥ 60 % of maxLevel).
+   *  2. For each thin branch, sample a few evenly-spaced positions along
+   *     the curve and record the branch tangent at each sample.
+   *  3. Orient every leaf so its long axis (local +Y) aligns with the
+   *     branch tangent, then add a random spin around that axis and a
+   *     slight random tilt so leaves fan out naturally.
+   *  4. Single InstancedMesh → one GPU draw call for all foliage.
+   */
+  function FoliageMeshes({ curves }) {
+    if (!formData.addFoliage || !curves || curves.length === 0) return null;
+
+    const maxLevel = Math.max(...curves.map((c) => c.level));
+    // Only attach leaves to branches in the top 40 % of the level hierarchy
+    const thinThreshold = Math.floor(maxLevel * 0.6);
+
+    const thinBranches = curves.filter(({ level }) => level >= thinThreshold);
+    if (thinBranches.length === 0) return null;
+
+    // Sample points along each thin branch
+    const samplesPerBranch = 3; // positions per curve (t = 0.25, 0.5, 0.75)
+    const leavesPerSample  = 3; // leaf instances per sample point
+    const sampleTs = Array.from({ length: samplesPerBranch }, (_, i) =>
+      (i + 1) / (samplesPerBranch + 1)
+    );
+
+    // Replicate the same radius formula used by TreeMeshes so we can
+    // offset each leaf to the actual branch surface.
+    const initialRadius = Math.min(2.0, 0.15 + maxLevel * 0.04);
+    const minRadius = 0.02;
+    const decayFactor =
+      maxLevel > 0 ? Math.pow(minRadius / initialRadius, 1 / maxLevel) : 1;
+    const radiusAtLevel = (level) =>
+      initialRadius * Math.pow(decayFactor, level);
+
+    // Pre-collect all placement data so we know the exact instance count
+    const placements = [];
+    thinBranches.forEach(({ curve, level }) => {
+      sampleTs.forEach((t) => {
+        const pos     = curve.getPointAt(t);
+        const tangent = curve.getTangentAt(t).normalize();
+        for (let l = 0; l < leavesPerSample; l++) {
+          placements.push({ pos, tangent, level });
+        }
+      });
+    });
+
+    if (placements.length === 0) return null;
+
+    const leafPrototype = createLeafMesh({
+      width: 0.35,
+      height: 0.7,
+      segments: 12,
+      curvature: 0.06,
+      tipColor:  new THREE.Color(0x99dd44),
+      baseColor: new THREE.Color(0x44aa22),
+      stemColor: new THREE.Color(0x226611),
+    });
+    const leafGeo = leafPrototype.geometry;
+    const leafMat = leafPrototype.material;
+
+    const mesh = new THREE.InstancedMesh(leafGeo, leafMat, placements.length);
+    // mesh.castShadow = true;
+
+    const leafHalfHeight = 0.7 / 2; // must match height passed to createLeafMesh
+
+    const dummy  = new THREE.Object3D();
+    const up     = new THREE.Vector3(0, 1, 0);
+    const tmpVec = new THREE.Vector3();
+
+    placements.forEach(({ pos, tangent, level }, i) => {
+      const s = 0.7 + Math.random() * 0.6;
+
+      // ── 1. Pick a random radial direction perpendicular to the tangent ──
+      // Use world-up as the reference; fall back to world-X if tangent is
+      // nearly vertical so the cross-product never degenerates.
+      const ref = Math.abs(tangent.dot(up)) > 0.9
+        ? new THREE.Vector3(1, 0, 0)
+        : up;
+      tmpVec.crossVectors(tangent, ref).normalize();
+
+      // Rotate tmpVec randomly around the tangent to get a uniformly
+      // distributed radial direction.
+      const spinAngle = Math.random() * Math.PI * 2;
+      const qSpin = new THREE.Quaternion().setFromAxisAngle(tangent, spinAngle);
+      const radial = tmpVec.clone().applyQuaternion(qSpin); // unit vec ⊥ tangent
+
+      // ── 2. Offset leaf center to sit on the branch surface ──────────────
+      // Leaf local +Y = radial (outward), so stem (local -Y, at -halfHeight)
+      // sits at branchSurface when center is at: surface + halfHeight * radial
+      const branchRadius = radiusAtLevel(level);
+      const surfaceDist  = branchRadius + leafHalfHeight * s;
+      dummy.position.set(
+        pos.x + radial.x * surfaceDist,
+        pos.y + radial.y * surfaceDist,
+        pos.z + radial.z * surfaceDist
+      );
+
+      // ── 3. Build orientation from the two known axes ─────────────────────
+      // +Y (leaf long axis, stem→tip) = radial
+      // +Z (leaf face normal)         = tangent
+      // +X (leaf width axis)          = tangent × radial (right-hand rule)
+      const xAxis = new THREE.Vector3().crossVectors(tangent, radial).normalize();
+      const m = new THREE.Matrix4().makeBasis(xAxis, radial, tangent);
+      dummy.quaternion.setFromRotationMatrix(m);
+
+      // Slight random droop so leaves don't look perfectly rigid
+      dummy.rotateX((Math.random() - 0.3) * 0.4);
+
+      dummy.scale.setScalar(s);
+      dummy.updateMatrix();
+      mesh.setMatrixAt(i, dummy.matrix);
+    });
+
+    mesh.instanceMatrix.needsUpdate = true;
+    return <primitive object={mesh} />;
+  }
+
   // console.info("Attractor Points", attractorPoints);
 
   // Captures the live Three.js scene into a ref so we can export it
@@ -554,6 +678,7 @@ function App() {
               intensity={Math.PI}
             />
             <TreeMeshes curves={curves} />
+            <FoliageMeshes curves={curves} />
             <SceneCapture />
             <Dots
               show={formData.showNodes}

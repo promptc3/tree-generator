@@ -88,6 +88,18 @@ function TreeForm({ formData, setFormData, handleSubmit, handleExport }) {
             />
           </FormControl>
 
+          <FormControl display="flex" alignItems="center" mb={4}>
+            <FormLabel htmlFor="add-foliage" mb="0">
+              Add Foliage
+            </FormLabel>
+            <Switch
+              id="add-foliage"
+              name="addFoliage"
+              isChecked={formData.addFoliage}
+              onChange={handleChange}
+            />
+          </FormControl>
+
           <FormControl mb={4}>
             <FormLabel>Canopy Shape</FormLabel>
             <Select
