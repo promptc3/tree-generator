@@ -3,10 +3,10 @@ import { useState, useRef } from "react";
 import { Canvas, useThree } from "@react-three/fiber";
 import { GLTFExporter } from "three/examples/jsm/exporters/GLTFExporter";
 import { OrbitControls } from "@react-three/drei";
-import { nanoid } from "nanoid";
+import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import TreeForm from "./Settings.js";
 import { ChakraProvider, Flex, Box } from "@chakra-ui/react";
-import convert from "color-convert";
+import { Perf } from "r3f-perf";
 
 function App() {
   const [formData, setFormData] = useState({
@@ -110,6 +110,7 @@ function App() {
     });
     return repulsion;
   }
+
   const generateNodes = (initPos, attractorPoints) => {
     const branchOffset = 0.3;
 
@@ -247,6 +248,7 @@ function App() {
   };
 
   // Build a tapered tube geometry along a curve path with different start/end radii
+  // Includes flat end caps so no sphere joints are needed at connection points.
   function createTaperedTubeGeometry(path, tubularSegments, radiusStart, radiusEnd, radialSegments) {
     const frames = path.computeFrenetFrames(tubularSegments);
     const vertices = [];
@@ -254,12 +256,12 @@ function App() {
     const uvs = [];
     const indices = [];
 
+    // --- Tube wall ---
     for (let i = 0; i <= tubularSegments; i++) {
       const t = i / tubularSegments;
       const pos = path.getPointAt(t);
       const N = frames.normals[i];
       const B = frames.binormals[i];
-      // Linearly interpolate radius from start (bottom/parent) to end (top/child)
       const radius = radiusStart + (radiusEnd - radiusStart) * t;
 
       for (let j = 0; j <= radialSegments; j++) {
@@ -294,6 +296,53 @@ function App() {
       }
     }
 
+    // --- End caps ---
+    // Adds a filled circle at each end so tubes appear solid and
+    // connect seamlessly without needing sphere joints.
+    const addCap = (ringIndex, radius, faceNormal) => {
+      const t = ringIndex / tubularSegments;
+      const pos = path.getPointAt(t);
+      const N = frames.normals[ringIndex];
+      const B = frames.binormals[ringIndex];
+
+      // Centre vertex
+      const centerIdx = vertices.length / 3;
+      vertices.push(pos.x, pos.y, pos.z);
+      normals.push(faceNormal.x, faceNormal.y, faceNormal.z);
+      uvs.push(0.5, 0.5);
+
+      // Ring vertices (duplicate ring so the cap has its own flat normal)
+      const ringStart = vertices.length / 3;
+      for (let j = 0; j <= radialSegments; j++) {
+        const v = (j / radialSegments) * Math.PI * 2;
+        const sin = Math.sin(v);
+        const cos = -Math.cos(v);
+        vertices.push(
+          pos.x + radius * (cos * N.x + sin * B.x),
+          pos.y + radius * (cos * N.y + sin * B.y),
+          pos.z + radius * (cos * N.z + sin * B.z)
+        );
+        normals.push(faceNormal.x, faceNormal.y, faceNormal.z);
+        uvs.push(0.5 + 0.5 * cos, 0.5 + 0.5 * sin);
+      }
+
+      // Triangles: fan from centre to ring
+      for (let j = 0; j < radialSegments; j++) {
+        if (faceNormal.dot(path.getTangentAt(t)) < 0) {
+          // Start cap — reverse winding so normal faces outward
+          indices.push(centerIdx, ringStart + j + 1, ringStart + j);
+        } else {
+          // End cap
+          indices.push(centerIdx, ringStart + j, ringStart + j + 1);
+        }
+      }
+    };
+
+    const startTangent = path.getTangentAt(0).negate();
+    const endTangent   = path.getTangentAt(1);
+    addCap(0,              radiusStart, startTangent);
+    addCap(tubularSegments, radiusEnd,  endTangent);
+
     const geometry = new THREE.BufferGeometry();
     geometry.setIndex(indices);
     geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
@@ -316,10 +365,11 @@ function App() {
     const curves = [];
     // Create a map to store connections
     const connections = new Map();
+    const nodeMap = new Map(nodes.map((n) => [n.pos.toArray().join(","), n]));
     // Create smooth curves for each unique branch
     nodes.forEach((node) => {
       if (node.parent) {
-        const parentNode = nodes.find((n) => n.pos.equals(node.parent));
+        const parentNode = nodeMap.get(node.parent.toArray().join(","));
         if (parentNode) {
           // Create a unique key for this connection
           const key = [
@@ -374,6 +424,7 @@ function App() {
     setCurves([]);
     setCurves(newCurves);
   };
+
   function TreeMeshes({ curves }) {
     if (curves && curves.length > 0) {
       const maxLevel = Math.max(...curves.map((c) => c.level));
@@ -388,14 +439,14 @@ function App() {
       const radiusAtLevel = (level) =>
         initialRadius * Math.pow(decayFactor, level);
 
-      const hue = convert.hex.hsl(formData.treeColor)[0] / 360;
-      const radialSegments = 8;
-      const tubularSegments = 20;
+      // const hue = convert.hex.hsl(formData.treeColor)[0] / 360;
+      const radialSegments = 8; // 8
+      const tubularSegments = 10; // 12
 
       const treeMeshes = curves.map(({ curve, level }) => {
         const bottomRadius = radiusAtLevel(level - 1); // parent side
         const topRadius = radiusAtLevel(level);         // child side
-        const color = new THREE.Color().setHSL(hue, 1 - level * 0.02, 0.5);
+        // const color = new THREE.Color().setHSL(hue, 1 - level * 0.02, 0.5);
         const geometry = createTaperedTubeGeometry(
           curve,
           tubularSegments,
@@ -403,32 +454,52 @@ function App() {
           topRadius,
           radialSegments
         );
-        return (
-          <mesh key={nanoid()} geometry={geometry}>
-            <meshPhongMaterial color={color} shininess={10} />
-          </mesh>
-        );
+        return geometry;
+        // return (
+        //   <mesh key={nanoid()} geometry={geometry}>
+        //     <meshPhongMaterial color={color} shininess={10} />
+        //   </mesh>
+        // );
+      });
+      // const mergedTreeMesh = mergeGeometries(treeMeshes, false);
+      // const treeMesh = (
+      //   <mesh geometry={mergedTreeMesh}>
+      //     <meshPhongMaterial color={formData.treeColor} shininess={10} />
+      //   </mesh>
+      // );
+
+      // Add a sphere at every unique junction point to fill the gap where
+      // tubes meet at angles. Key by rounded position to deduplicate.
+      const junctionMap = new Map();
+      curves.forEach(({ curve, level }) => {
+        const startPt = curve.getPointAt(0);
+        const endPt   = curve.getPointAt(1);
+        const startKey = `${startPt.x.toFixed(3)},${startPt.y.toFixed(3)},${startPt.z.toFixed(3)}`;
+        const endKey   = `${endPt.x.toFixed(3)},${endPt.y.toFixed(3)},${endPt.z.toFixed(3)}`;
+        // Use the larger radius at each point so the sphere always covers the gap
+        const startR = radiusAtLevel(level - 1);
+        const endR   = radiusAtLevel(level);
+        if (!junctionMap.has(startKey) || junctionMap.get(startKey).r < startR) {
+          junctionMap.set(startKey, { pos: startPt, r: startR });
+        }
+        if (!junctionMap.has(endKey) || junctionMap.get(endKey).r < endR) {
+          junctionMap.set(endKey, { pos: endPt, r: endR });
+        }
       });
 
-      // Add sphere joints at connection points with matching radii
-      const jointSpheres = curves.map(({ curve, level }) => {
-        const bottomRadius = radiusAtLevel(level - 1);
-        const topRadius = radiusAtLevel(level);
-        const points = curve.getPoints(2); // start, mid, end
-        const color = new THREE.Color().setHSL(hue, 1 - level * 0.02, 0.5);
-        return [
-          <mesh key={nanoid()} position={[points[0].x, points[0].y, points[0].z]}>
-            <sphereGeometry args={[bottomRadius * 1.01, 8, 8]} />
-            <meshPhongMaterial color={color} shininess={10} />
-          </mesh>,
-          <mesh key={nanoid()} position={[points[2].x, points[2].y, points[2].z]}>
-            <sphereGeometry args={[topRadius * 1.01, 8, 8]} />
-            <meshPhongMaterial color={color} shininess={10} />
-          </mesh>,
-        ];
+      const sphereGeos = [];
+      junctionMap.forEach(({ pos, r }) => {
+        const geo = new THREE.SphereGeometry(r, radialSegments, radialSegments);
+        geo.translate(pos.x, pos.y, pos.z);
+        sphereGeos.push(geo);
       });
 
-      return [...treeMeshes, ...jointSpheres.flat()];
+      const mergedGeometry = mergeGeometries([...treeMeshes, ...sphereGeos], false);
+      return (
+        <mesh geometry={mergedGeometry}>
+          <meshPhongMaterial color={formData.treeColor} shininess={10} />
+        </mesh>
+      );
     }
   }
   // console.info("Attractor Points", attractorPoints);
@@ -468,6 +539,7 @@ function App() {
             style={{ height: "100%", width: "100%", background: formData.backgroundColor }}
             camera={{ position: [0, 0, 10], fov: 50, near: 0.5, far: 1000 }}
           >
+            <Perf position="top-left" />
             <ambientLight intensity={Math.PI / 2} />
             <spotLight
               position={[10, 10, 10]}
